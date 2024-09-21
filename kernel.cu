@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <iostream>
+#include <limits.h>
 
 
 
@@ -23,7 +24,6 @@ int nextPowerOfTwo(int n) {
 
 __global__ void BitonicSort(int* array, int j, int i) {
     int k = threadIdx.x + blockDim.x * blockIdx.x;
-
     // ext means the target exchange idx, if k want to exchange with 5, then ext = 5
     int ext = k ^ j;
     // the exchange of A and B only need to check once, if we check A compare with B, we don't need to check B compare with A
@@ -41,10 +41,13 @@ __global__ void BitonicSort(int* array, int j, int i) {
             array[ext] = t;
         }
     }
+}
 
-        
-
-    
+__global__ void padFill(int* array, int n) {
+    int k = threadIdx.x + blockDim.x * blockIdx.x;
+    if (k >= n) {
+        array[k] = INT_MAX;
+    }
 }
 
 
@@ -81,11 +84,25 @@ int main(int argc, char* argv[]) {
     // ======================================================================
 
     // your code goes here .......
+    int newSize;
+    newSize = nextPowerOfTwo(size);
+    // blocksize is number of thread
+    int blockSize = 1024;
+    // gridsize is number of block
+    int gridSize = newSize / blockSize;
+    
+    arrCpu = (int*)realloc(arrCpu, newSize * sizeof(int));
+    arrSortedGpu = (int*)realloc(arrSortedGpu, newSize * sizeof(int));
+    // for (int i = size; i < newSize; i++) {
+    //     arrCpu[i] = 2147483647;
+    // }
+    
     int* arrGpu;
-    // int padded_size;
-    // padded_size = nextPowerOfTwo(size);
-    cudaMalloc((void**) &arrGpu, size * sizeof(int));
-    cudaMemcpy(arrGpu, arrCpu, size * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &arrGpu, newSize * sizeof(int));    
+    cudaMemcpy(arrGpu, arrCpu, newSize * sizeof(int), cudaMemcpyHostToDevice);
+    padFill<<<gridSize, blockSize>>>(arrGpu, size);
+    // cudaMemcpy(arrCpu, arrGpu, newSize * sizeof(int), cudaMemcpyDeviceToHost);
+
 
 
     cudaEventRecord(stop);
@@ -99,25 +116,29 @@ int main(int argc, char* argv[]) {
 
     // your code goes here .......
     
-    // gridsize is number of block
-    dim3 gridSize = 16;
-    // blocksize is number of thread
-    dim3 blockSize = 256;
+
+
+
+    // size_t freeMem, totalMem;
+    // cudaMemGetInfo(&freeMem, &totalMem);
+    // printf("Free memory: %zu, Total memory: %zu\n", freeMem, totalMem);
+
     
     // this outer loop is for bitonic merge
-    for (int i = 2; i <= size; i <<= 1) {
+    for (int i = 2; i <= newSize; i <<= 1) {
         // second loop is for bitonic split
         for (int j = i / 2; j > 0; j >>= 1) {
-            printf("i, j: %d, %d\n", i, j);
+            // printf("i, j: %d, %d\n", i, j);
             BitonicSort<<<gridSize, blockSize>>>(arrGpu, j, i);
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                printf("CUDA error: %s\n", cudaGetErrorString(err));
+                return 1;
+            }
             cudaDeviceSynchronize();
         }
     }
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA error: %s\n", cudaGetErrorString(err));
-        return 1;
-    }
+    
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
