@@ -4,6 +4,49 @@
 #include <chrono>
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <iostream>
+
+
+
+int nextPowerOfTwo(int n) {
+    if (n && !(n & (n - 1))) {
+        return n;
+    }
+
+    int power = 1;
+    while (power < n) {
+        power <<= 1;
+    }
+
+    return power;
+}
+
+__global__ void BitonicSort(int* array, int j, int i) {
+    int k = threadIdx.x + blockDim.x * blockIdx.x;
+
+    // ext means the target exchange idx, if k want to exchange with 5, then ext = 5
+    int ext = k ^ j;
+    // the exchange of A and B only need to check once, if we check A compare with B, we don't need to check B compare with A
+    // we only check when the target is higher than current index
+    // printf("k, k^j: %d, %d\n", k, ext);
+    // printf("array[k], array[k^j]: %d, %d\n", array[k], array[ext]);
+    if (ext > k) {
+        // now we want to compare, we know have to consider whether it's ascending or descending, based on the direction
+        int dir = (k & i) == 0;
+        // if dir == 0, that means ascending
+        // k < ext but array[k] > array[ext] means it is descending, so i have to swap
+        if (dir == (array[k] > array[ext])) {
+            int t = array[k];
+            array[k] = array[ext];
+            array[ext] = t;
+        }
+    }
+
+        
+
+    
+}
+
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -38,11 +81,16 @@ int main(int argc, char* argv[]) {
     // ======================================================================
 
     // your code goes here .......
+    int* arrGpu;
+    // int padded_size;
+    // padded_size = nextPowerOfTwo(size);
+    cudaMalloc((void**) &arrGpu, size * sizeof(int));
+    cudaMemcpy(arrGpu, arrCpu, size * sizeof(int), cudaMemcpyHostToDevice);
+
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&h2dTime, start, stop);
-
     cudaEventRecord(start);
     
     // ======================================================================
@@ -50,6 +98,26 @@ int main(int argc, char* argv[]) {
     // ======================================================================
 
     // your code goes here .......
+    
+    // gridsize is number of block
+    dim3 gridSize = 16;
+    // blocksize is number of thread
+    dim3 blockSize = 256;
+    
+    // this outer loop is for bitonic merge
+    for (int i = 2; i <= size; i <<= 1) {
+        // second loop is for bitonic split
+        for (int j = i / 2; j > 0; j >>= 1) {
+            printf("i, j: %d, %d\n", i, j);
+            BitonicSort<<<gridSize, blockSize>>>(arrGpu, j, i);
+            cudaDeviceSynchronize();
+        }
+    }
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA error: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -62,6 +130,8 @@ int main(int argc, char* argv[]) {
     // ======================================================================
 
     // your code goes here .......
+    cudaMemcpy(arrSortedGpu, arrGpu, size * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaFree(arrGpu);
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -75,10 +145,20 @@ int main(int argc, char* argv[]) {
     auto endTime = std::chrono::high_resolution_clock::now();
     cpuTime = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
     cpuTime = cpuTime / 1000;
+    // printf("CPU\n");
+    // for (int i = 0; i < size; i++) {
+    //     printf("%d\n", arrCpu[i]);
+    // }
+    // printf("GPU\n");
+    // for (int i = 0; i < size; i++) {
+    //     printf("%d\n", arrSortedGpu[i]);
+    // }
 
     int match = 1;
     for (int i = 0; i < size; i++) {
+        // std::cout << i << std::endl;
         if (arrSortedGpu[i] != arrCpu[i]) {
+            std::cout << i << " is wrong." << std::endl;
             match = 0;
             break;
         }
