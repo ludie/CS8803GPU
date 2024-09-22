@@ -35,15 +35,16 @@ __global__ void BitonicSortHead(int* array, int i) {
         // we only check when the target is higher than current index
         // printf("k, k^j: %d, %d\n", k, ext);
         // printf("array[k], array[k^j]: %d, %d\n", array[k], array[ext]);
-        if (ext > k && ext < blockDim.x * gridDim.x) {
+        if (ext > k) {
             // now we want to compare, we know have to consider whether it's ascending or descending, based on the direction
             int dir = (k & i) == 0;
             // if dir == 0, that means ascending
+            int extt = ext % blockDim.x;
             // k < ext but array[k] > array[ext] means it is descending, so i have to swap
-            if (dir == (tempArray[tx] > tempArray[ext % blockDim.x])) {
+            if (dir == (tempArray[tx] > tempArray[extt])) {
                 int t = tempArray[tx];
-                tempArray[tx] = tempArray[ext % blockDim.x];
-                tempArray[ext % blockDim.x] = t;
+                tempArray[tx] = tempArray[extt];
+                tempArray[extt] = t;
             }
         }
         __syncthreads();
@@ -51,7 +52,40 @@ __global__ void BitonicSortHead(int* array, int i) {
     array[k] = tempArray[tx];    
 }
 
+__global__ void BitonicSortTail(int* array, int j, int i) {
+    __shared__ int tempArray[512];
+    int tx = threadIdx.x;
+    int k = tx + blockDim.x * blockIdx.x;
+    // ext means the target exchange idx, if k want to exchange with 5, then ext = 5
+    tempArray[tx] = array[k];
+    __syncthreads();
+    for (int nj = j; nj > 0; nj >>= 1) {
+        int ext = k ^ nj;
+        // printf("%d, %d \n", k, ext);
+        // the exchange of A and B only need to check once, if we check A compare with B, we don't need to check B compare with A
+        // we only check when the target is higher than current index
+        // printf("k, k^j: %d, %d\n", k, ext);
+        // printf("array[k], array[k^j]: %d, %d\n", array[k], array[ext]);
+        if (ext > k) {
+            // printf("%d, %d \n", k, ext);
+            // now we want to compare, we know have to consider whether it's ascending or descending, based on the direction
+            int dir = (k & i) == 0;
+            // printf("%d, %d, %d, %d\n", i, k, i & k, i&k == 0);
 
+            // int dir = 0;
+            // if dir == 0, that means ascending
+            int extt = ext % blockDim.x;
+            // k < ext but array[k] > array[ext] means it is descending, so i have to swap
+            if (dir == tempArray[tx] > tempArray[extt]) {
+                int t = tempArray[tx];
+                tempArray[tx] = tempArray[extt];
+                tempArray[extt] = t;
+            }
+        }
+        __syncthreads();
+    }
+    array[k] = tempArray[tx];    
+}
 __global__ void BitonicSort(int* array, int j, int i) {
     int k = threadIdx.x + blockDim.x * blockIdx.x;
     // ext means the target exchange idx, if k want to exchange with 5, then ext = 5
@@ -101,6 +135,13 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < size; i++) {
         arrCpu[i] = rand() % 1000;
     }
+    cudaError_t err = cudaHostRegister(arrCpu, size * sizeof(int), cudaHostRegisterMapped);
+    // if (err != cudaSuccess) {
+    //     printf("cudaHostRegister failed: %s\n", cudaGetErrorString(err));
+    //     free(arrCpu);
+    //     free(arrSortedGpu);
+    //     return 1;
+    // }
 
     float gpuTime, h2dTime, d2hTime, cpuTime = 0;
 
@@ -121,19 +162,19 @@ int main(int argc, char* argv[]) {
     // gridsize is number of block
     int gridSize = (newSize + blockSize - 1) / blockSize;
     
-    arrCpu = (int*)realloc(arrCpu, newSize * sizeof(int));
-    arrSortedGpu = (int*)realloc(arrSortedGpu, newSize * sizeof(int));
+    // arrCpu = (int*)realloc(arrCpu, newSize * sizeof(int));
+    // arrSortedGpu = (int*)realloc(arrSortedGpu, newSize * sizeof(int));
     // for (int i = size; i < newSize; i++) {
-    //     arrCpu[i] = 2147483647;
+    //     arrCpu[i] = 2147443647;
     // }
     
     int* arrGpu;
-    cudaMalloc((void**) &arrGpu, newSize * sizeof(int));    
-    cudaMemcpy(arrGpu, arrCpu, newSize * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMalloc((void**) &arrGpu, newSize * sizeof(int));   
+    // int paddingValue = 2147443647;
+    // cudaMemset(arrGpu, INT_MAX, newSize * sizeof(int));
+    
+    cudaMemcpy(arrGpu, arrCpu, size * sizeof(int), cudaMemcpyHostToDevice);
     padFill<<<gridSize, blockSize>>>(arrGpu, size);
-    // cudaMemcpy(arrCpu, arrGpu, newSize * sizeof(int), cudaMemcpyDeviceToHost);
-
-
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -152,34 +193,61 @@ int main(int argc, char* argv[]) {
     // size_t freeMem, totalMem;
     // cudaMemGetInfo(&freeMem, &totalMem);
     // printf("Free memory: %zu, Total memory: %zu\n", freeMem, totalMem);
-
+    
     
     // this outer loop is for bitonic merge
     for (int i = 2; i <= newSize; i <<= 1) {
         // second loop is for bitonic split
-        if (i<= 512) {
+
+        if (i<= 512) {//
+            // printf("head\n");
             BitonicSortHead<<<gridSize, blockSize>>>(arrGpu, i);
         }
         else {
             for (int j = i / 2; j > 0; j >>= 1) {
             // printf("i, j: %d, %d\n", i, j);
-            BitonicSort<<<gridSize, blockSize>>>(arrGpu, j, i);
-            cudaError_t err = cudaGetLastError();
-            if (err != cudaSuccess) {
-                printf("CUDA error: %s\n", cudaGetErrorString(err));
-                return 1;
+
+            if (j >= 512){
+                BitonicSort<<<gridSize, blockSize>>>(arrGpu, j, i);
+                cudaError_t err = cudaGetLastError();
+                if (err != cudaSuccess) {
+                    printf("CUDA error: %s\n", cudaGetErrorString(err));
+                    return 1;
+                }
+                cudaDeviceSynchronize();
             }
-            cudaDeviceSynchronize();
+            else {
+                // printf("tail\n");
+                BitonicSortTail<<<gridSize, blockSize>>>(arrGpu, j, i);
+                break;
+            }
+
         }
         }
     }
+
+    //     // this outer loop is for bitonic merge
+    // for (int i = 2; i <= newSize; i <<= 1) {
+    //     // second loop is for bitonic split
+
+    //     for (int j = i / 2; j > 0; j >>= 1) {
+    //     printf("i, j: %d, %d\n", i, j);
+
+    //     BitonicSort<<<gridSize, blockSize>>>(arrGpu, j, i);
+    //     cudaError_t err = cudaGetLastError();
+    //     if (err != cudaSuccess) {
+    //         printf("CUDA error: %s\n", cudaGetErrorString(err));
+    //         return 1;
+    //     }
+    //     cudaDeviceSynchronize();
+    //     }
+    // }
     
 
-    // cudaEventRecord(stop);
+    cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&gpuTime, start, stop);
-    // cudaEventRecord(start);
-    132132;
+    cudaEventRecord(start);
 
     // ======================================================================
     // Transfer sorted data back to host (copied to arr_sorted_gpu)
@@ -219,7 +287,7 @@ int main(int argc, char* argv[]) {
             break;
         }
     }
-
+    cudaHostUnregister(arrCpu);
     free(arrCpu);
     free(arrSortedGpu);
 
