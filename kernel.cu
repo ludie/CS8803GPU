@@ -21,6 +21,36 @@ int nextPowerOfTwo(int n) {
 
     return power;
 }
+__global__ void BitonicSortHead(int* array, int i) {
+    __shared__ int tempArray[512];
+    int tx = threadIdx.x;
+    int k = tx + blockDim.x * blockIdx.x;
+    // ext means the target exchange idx, if k want to exchange with 5, then ext = 5
+    // moved data from global memory to shared memoery in the SM, which is faster
+    tempArray[tx] = array[k];
+    __syncthreads();
+    for (int j = i / 2; j > 0; j >>= 1) {
+        int ext = k ^ j;
+        // the exchange of A and B only need to check once, if we check A compare with B, we don't need to check B compare with A
+        // we only check when the target is higher than current index
+        // printf("k, k^j: %d, %d\n", k, ext);
+        // printf("array[k], array[k^j]: %d, %d\n", array[k], array[ext]);
+        if (ext > k && ext < blockDim.x * gridDim.x) {
+            // now we want to compare, we know have to consider whether it's ascending or descending, based on the direction
+            int dir = (k & i) == 0;
+            // if dir == 0, that means ascending
+            // k < ext but array[k] > array[ext] means it is descending, so i have to swap
+            if (dir == (tempArray[tx] > tempArray[ext % blockDim.x])) {
+                int t = tempArray[tx];
+                tempArray[tx] = tempArray[ext % blockDim.x];
+                tempArray[ext % blockDim.x] = t;
+            }
+        }
+        __syncthreads();
+    }
+    array[k] = tempArray[tx];    
+}
+
 
 __global__ void BitonicSort(int* array, int j, int i) {
     int k = threadIdx.x + blockDim.x * blockIdx.x;
@@ -87,9 +117,9 @@ int main(int argc, char* argv[]) {
     int newSize;
     newSize = nextPowerOfTwo(size);
     // blocksize is number of thread
-    int blockSize = 1024;
+    int blockSize = 512;
     // gridsize is number of block
-    int gridSize = newSize / blockSize;
+    int gridSize = (newSize + blockSize - 1) / blockSize;
     
     arrCpu = (int*)realloc(arrCpu, newSize * sizeof(int));
     arrSortedGpu = (int*)realloc(arrSortedGpu, newSize * sizeof(int));
@@ -127,7 +157,11 @@ int main(int argc, char* argv[]) {
     // this outer loop is for bitonic merge
     for (int i = 2; i <= newSize; i <<= 1) {
         // second loop is for bitonic split
-        for (int j = i / 2; j > 0; j >>= 1) {
+        if (i<= 512) {
+            BitonicSortHead<<<gridSize, blockSize>>>(arrGpu, i);
+        }
+        else {
+            for (int j = i / 2; j > 0; j >>= 1) {
             // printf("i, j: %d, %d\n", i, j);
             BitonicSort<<<gridSize, blockSize>>>(arrGpu, j, i);
             cudaError_t err = cudaGetLastError();
@@ -136,6 +170,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             cudaDeviceSynchronize();
+        }
         }
     }
     
