@@ -175,11 +175,11 @@ int main(int argc, char* argv[]) {
     }
     
 
-    cudaEventRecord(stop);
+    // cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&gpuTime, start, stop);
-
-    cudaEventRecord(start);
+    // cudaEventRecord(start);
+    132132;
 
     // ======================================================================
     // Transfer sorted data back to host (copied to arr_sorted_gpu)
